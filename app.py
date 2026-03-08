@@ -26,10 +26,29 @@ if not models:
     st.error("Error: 'macroscopic_surrogate_models.pkl' nahi mili. Please ensure the model file is in your GitHub repository.")
     st.stop()
 
-# --- LAB DATA UPLOAD & RETRAINING MODULE ---
-st.sidebar.header("🧪 Lab Data Integration")
-uploaded_file = st.sidebar.file_uploader("Upload Wet-Lab Results (.csv)", type=["csv"])
+# Base Features and Targets
+features = [
+    'hydroxytyrosol_wt_pct', 'oleuropein_wt_pct', 
+    'isopropyl_myristate_wt_pct', 'tween80_wt_pct', 
+    'span80_wt_pct', 'aqueous_phase_wt_pct'
+]
+targets = ['spf', 'droplet_size_nm', 'viscosity_cp']
 
+# --- 2. Bio-Team Data Integration (Sidebar Top) ---
+st.sidebar.header("🧪 Lab Data Integration")
+
+# 2A. Template Download
+template_df = pd.DataFrame(columns=features + targets)
+csv_template = template_df.to_csv(index=False).encode('utf-8')
+st.sidebar.download_button(
+    label="📥 Download Blank CSV Template", 
+    data=csv_template, 
+    file_name="lab_data_template.csv", 
+    mime="text/csv"
+)
+
+# 2B. Data Upload & Retraining
+uploaded_file = st.sidebar.file_uploader("Upload Wet-Lab Results (.csv)", type=["csv"])
 if uploaded_file is not None:
     if st.sidebar.button("Retrain AI Models Now"):
         with st.spinner("Retraining XGBoost on real lab data..."):
@@ -40,15 +59,14 @@ if uploaded_file is not None:
                 
                 lab_df = pd.read_csv(uploaded_file)
                 
-                # Check strict column requirements
-                required_cols = features + ['spf', 'droplet_size_nm', 'viscosity_cp']
-                if not all(col in lab_df.columns for col in required_cols):
-                    st.sidebar.error("CSV columns mismatch. Check template.")
+                # Validation check
+                if not all(col in lab_df.columns for col in features + targets):
+                    st.sidebar.error("CSV columns mismatch. Use the downloaded template exactly.")
                 else:
                     X_lab = lab_df[features]
                     new_models = {}
                     
-                    for target in ['spf', 'droplet_size_nm', 'viscosity_cp']:
+                    for target in targets:
                         y_lab = lab_df[target]
                         pipe = Pipeline([
                             ('scaler', StandardScaler()),
@@ -57,12 +75,9 @@ if uploaded_file is not None:
                         pipe.fit(X_lab, y_lab)
                         new_models[target] = pipe
                     
-                    # Update models in memory for this session
-                    models = new_models
-                    joblib.dump(models, 'macroscopic_surrogate_models_UPDATED.pkl')
+                    joblib.dump(new_models, 'macroscopic_surrogate_models_UPDATED.pkl')
                     st.sidebar.success("Models retrained successfully!")
                     
-                    # Allow download of the new model
                     with open('macroscopic_surrogate_models_UPDATED.pkl', 'rb') as f:
                         st.sidebar.download_button(
                             label="Download Updated Model (.pkl)",
@@ -70,14 +85,13 @@ if uploaded_file is not None:
                             file_name="macroscopic_surrogate_models.pkl",
                             mime="application/octet-stream"
                         )
-                    st.sidebar.info("Bio-team: Download this file and send it to the CS team to permanently update the system.")
-                    
+                    st.sidebar.info("Bio-team: Send this downloaded .pkl file to the CS team to permanently update the portal.")
             except Exception as e:
                 st.sidebar.error(f"Retraining failed: {e}")
+
 st.sidebar.markdown("---")
 
-
-# --- 2. Interactive Inputs & Normalization ---
+# --- 3. Interactive Inputs & Normalization ---
 st.sidebar.header("Formulation Inputs (Raw wt%)")
 ht = st.sidebar.slider("Hydroxytyrosol", 0.1, 5.0, 1.0, 0.1)
 ol = st.sidebar.slider("Oleuropein", 0.1, 5.0, 2.0, 0.1)
@@ -88,20 +102,14 @@ aq = st.sidebar.slider("Aqueous Phase", 40.0, 90.0, 69.5, 0.5)
 
 raw_inputs = np.array([ht, ol, ipm, t80, s80, aq])
 normalized_inputs = (raw_inputs / raw_inputs.sum()) * 100
-
-features = [
-    'hydroxytyrosol_wt_pct', 'oleuropein_wt_pct', 
-    'isopropyl_myristate_wt_pct', 'tween80_wt_pct', 
-    'span80_wt_pct', 'aqueous_phase_wt_pct'
-]
 input_df = pd.DataFrame([normalized_inputs], columns=features)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Normalized Formulation (Strict 100%)")
 st.sidebar.dataframe(input_df.T.rename(columns={0: "Actual wt%"}).style.format("{:.2f}%"))
 
-# --- 3. Predictions & Efficacy Scoring ---
-preds = {target: models[target].predict(input_df)[0] for target in ['spf', 'droplet_size_nm', 'viscosity_cp']}
+# --- 4. Predictions & Efficacy Scoring ---
+preds = {target: models[target].predict(input_df)[0] for target in targets}
 
 ideal_size = 150.0 
 size_penalty = abs(preds['droplet_size_nm'] - ideal_size) * 0.5
@@ -115,12 +123,12 @@ col4.metric("Overall Efficacy Score", f"{efficacy_score:.2f}")
 
 st.markdown("---")
 
-# --- 4. Visualizations ---
+# --- 5. Visualizations ---
 st.subheader("Candidate Efficacy Profile & Diagnostics")
 
 viz_col1, viz_col2, viz_col3 = st.columns(3)
 
-# 4A. Radar Chart
+# 5A. Radar Chart
 with viz_col1:
     st.markdown("**Efficacy Balance**")
     max_spf, max_size, max_visc = 50.0, 300.0, 100.0
@@ -138,7 +146,7 @@ with viz_col1:
     fig_radar.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 100])), showlegend=False, margin=dict(l=20, r=20, t=20, b=20))
     st.plotly_chart(fig_radar, use_container_width=True)
 
-# 4B. Feature Importance
+# 5B. Feature Importance
 with viz_col2:
     st.markdown("**Feature Importance (Droplet Size)**")
     xgb_model = models['droplet_size_nm'].named_steps['regressor']
@@ -151,7 +159,7 @@ with viz_col2:
     fig_imp.update_layout(margin=dict(l=20, r=20, t=20, b=20))
     st.plotly_chart(fig_imp, use_container_width=True)
 
-# 4C. Response Surface
+# 5C. Response Surface
 with viz_col3:
     st.markdown("**Contour (Oil vs Tween 80)**")
     grid_res = 20
@@ -181,14 +189,14 @@ with viz_col3:
 
 st.markdown("---")
 
-# --- 5. Bayesian Optimization Loop ---
+# --- 6. Bayesian Optimization Loop ---
 st.subheader("Phase 3: Automated Active Learning")
 st.write("Clicking below initializes the Bayesian models to suggest the next 5 optimal formulations.")
 
 if st.button("Generate Next 5 Optimal Formulations"):
-    with st.spinner("Initializing Heavy ML Libraries & Running Bayesian Optimization..."):
+    with st.spinner("Initializing ML Libraries & Running Bayesian Optimization..."):
         try:
-            # LAZY IMPORT: Botorch is only loaded when this button is clicked, preventing UI crashes.
+            # LAZY IMPORT
             import torch
             from botorch.models import SingleTaskGP
             from gpytorch.mlls import ExactMarginalLogLikelihood
@@ -235,5 +243,4 @@ if st.button("Generate Next 5 Optimal Formulations"):
         except FileNotFoundError:
             st.error("'synthetic_formulation_data.csv' nahi mili. Please ensure this file is uploaded to your GitHub repository.")
         except Exception as e:
-            st.error(f"Optimization failed due to dependency issue: {e}")
-
+            st.error(f"Optimization failed: {e}")
