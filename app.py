@@ -4,13 +4,6 @@ import numpy as np
 import joblib
 import plotly.graph_objects as go
 import plotly.express as px
-import torch
-from botorch.models import SingleTaskGP
-from gpytorch.mlls import ExactMarginalLogLikelihood
-from botorch.fit import fit_gpytorch_mll
-from botorch.acquisition import qExpectedImprovement
-from botorch.optim import optimize_acqf
-from botorch.utils.transforms import normalize, unnormalize
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -139,12 +132,20 @@ st.markdown("---")
 
 # --- 5. Bayesian Optimization Loop ---
 st.subheader("Phase 3: Automated Active Learning")
-st.write("Current dataset ke basis par AI next optimal 5 formulations suggest karega.")
+st.write("Clicking below initializes the Bayesian models to suggest the next 5 optimal formulations.")
 
 if st.button("Generate Next 5 Optimal Formulations"):
-    with st.spinner("Running Bayesian Optimization..."):
+    with st.spinner("Initializing Heavy ML Libraries & Running Bayesian Optimization..."):
         try:
-            # Load underlying data for GP
+            # LAZY IMPORT: Botorch is only loaded when this button is clicked, preventing UI crashes.
+            import torch
+            from botorch.models import SingleTaskGP
+            from gpytorch.mlls import ExactMarginalLogLikelihood
+            from botorch.fit import fit_gpytorch_mll
+            from botorch.acquisition import qExpectedImprovement
+            from botorch.optim import optimize_acqf
+            from botorch.utils.transforms import normalize, unnormalize
+
             hist_df = pd.read_csv('synthetic_formulation_data.csv')
             X = torch.tensor(hist_df[features].values, dtype=torch.double)
             
@@ -182,3 +183,5 @@ if st.button("Generate Next 5 Optimal Formulations"):
             
         except FileNotFoundError:
             st.error("'synthetic_formulation_data.csv' nahi mili. Please ensure this file is uploaded to your GitHub repository.")
+        except Exception as e:
+            st.error(f"Optimization failed due to dependency issue: {e}")
