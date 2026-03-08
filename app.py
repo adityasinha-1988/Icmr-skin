@@ -37,8 +37,9 @@ targets = ['spf', 'droplet_size_nm', 'viscosity_cp']
 # --- 2. Bio-Team Data Integration (Sidebar Top) ---
 st.sidebar.header("🧪 Lab Data Integration")
 
-# 2A. Template Download
-template_df = pd.DataFrame(columns=features + targets)
+# 2A. Template Download (Updated with Metadata)
+metadata_cols = ['experiment_id', 'date', 'time']
+template_df = pd.DataFrame(columns=metadata_cols + features + targets)
 csv_template = template_df.to_csv(index=False).encode('utf-8')
 st.sidebar.download_button(
     label="📥 Download Blank CSV Template", 
@@ -244,3 +245,4 @@ if st.button("Generate Next 5 Optimal Formulations"):
             st.error("'synthetic_formulation_data.csv' nahi mili. Please ensure this file is uploaded to your GitHub repository.")
         except Exception as e:
             st.error(f"Optimization failed: {e}")
+
