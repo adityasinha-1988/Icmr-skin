@@ -26,6 +26,57 @@ if not models:
     st.error("Error: 'macroscopic_surrogate_models.pkl' nahi mili. Please ensure the model file is in your GitHub repository.")
     st.stop()
 
+# --- LAB DATA UPLOAD & RETRAINING MODULE ---
+st.sidebar.header("🧪 Lab Data Integration")
+uploaded_file = st.sidebar.file_uploader("Upload Wet-Lab Results (.csv)", type=["csv"])
+
+if uploaded_file is not None:
+    if st.sidebar.button("Retrain AI Models Now"):
+        with st.spinner("Retraining XGBoost on real lab data..."):
+            try:
+                from sklearn.pipeline import Pipeline
+                from sklearn.preprocessing import StandardScaler
+                from xgboost import XGBRegressor
+                
+                lab_df = pd.read_csv(uploaded_file)
+                
+                # Check strict column requirements
+                required_cols = features + ['spf', 'droplet_size_nm', 'viscosity_cp']
+                if not all(col in lab_df.columns for col in required_cols):
+                    st.sidebar.error("CSV columns mismatch. Check template.")
+                else:
+                    X_lab = lab_df[features]
+                    new_models = {}
+                    
+                    for target in ['spf', 'droplet_size_nm', 'viscosity_cp']:
+                        y_lab = lab_df[target]
+                        pipe = Pipeline([
+                            ('scaler', StandardScaler()),
+                            ('regressor', XGBRegressor(random_state=42, n_estimators=200, max_depth=4, learning_rate=0.05))
+                        ])
+                        pipe.fit(X_lab, y_lab)
+                        new_models[target] = pipe
+                    
+                    # Update models in memory for this session
+                    models = new_models
+                    joblib.dump(models, 'macroscopic_surrogate_models_UPDATED.pkl')
+                    st.sidebar.success("Models retrained successfully!")
+                    
+                    # Allow download of the new model
+                    with open('macroscopic_surrogate_models_UPDATED.pkl', 'rb') as f:
+                        st.sidebar.download_button(
+                            label="Download Updated Model (.pkl)",
+                            data=f,
+                            file_name="macroscopic_surrogate_models.pkl",
+                            mime="application/octet-stream"
+                        )
+                    st.sidebar.info("Bio-team: Download this file and send it to the CS team to permanently update the system.")
+                    
+            except Exception as e:
+                st.sidebar.error(f"Retraining failed: {e}")
+st.sidebar.markdown("---")
+
+
 # --- 2. Interactive Inputs & Normalization ---
 st.sidebar.header("Formulation Inputs (Raw wt%)")
 ht = st.sidebar.slider("Hydroxytyrosol", 0.1, 5.0, 1.0, 0.1)
@@ -185,3 +236,4 @@ if st.button("Generate Next 5 Optimal Formulations"):
             st.error("'synthetic_formulation_data.csv' nahi mili. Please ensure this file is uploaded to your GitHub repository.")
         except Exception as e:
             st.error(f"Optimization failed due to dependency issue: {e}")
+
