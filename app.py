@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 import warnings
 import io
+from sklearn.metrics import mean_squared_error
 
 warnings.filterwarnings("ignore")
 
@@ -53,7 +54,7 @@ features = [
 ]
 targets = ['spf', 'droplet_size_nm', 'viscosity_cp']
 
-# --- 2. Bio-Team Data Integration ---
+# --- 2. Bio-Team Data Integration (Active Learning Hub) ---
 st.sidebar.header("🧪 Lab Data Integration")
 
 metadata_cols = ['experiment_id', 'date', 'time']
@@ -72,7 +73,7 @@ if uploaded_file is not None:
     st.sidebar.success(f"File loaded: {uploaded_file.name}")
     
     if st.sidebar.button("Retrain AI Models Now"):
-        with st.spinner("Retraining XGBoost (Single-Core Mode)..."):
+        with st.spinner("Retraining XGBoost and Calculating Active Learning Metrics..."):
             try:
                 from sklearn.pipeline import Pipeline
                 from sklearn.preprocessing import StandardScaler
@@ -86,20 +87,41 @@ if uploaded_file is not None:
                 else:
                     X_lab = lab_df[features]
                     new_models = {}
+                    comparison_data = []
+
                     for target in targets:
                         y_lab = lab_df[target]
+                        
+                        # 1. Calculate Old Model Error
+                        preds_old = models[target].predict(X_lab)
+                        rmse_old = np.sqrt(mean_squared_error(y_lab, preds_old))
+                        
+                        # 2. Train New Model
                         pipe = Pipeline([
                             ('scaler', StandardScaler()),
                             ('regressor', XGBRegressor(random_state=42, n_estimators=200, max_depth=4, learning_rate=0.05, n_jobs=1))
                         ])
                         pipe.fit(X_lab, y_lab)
                         new_models[target] = pipe
+                        
+                        # 3. Calculate New Model Error
+                        preds_new = pipe.predict(X_lab)
+                        rmse_new = np.sqrt(mean_squared_error(y_lab, preds_new))
+                        
+                        # Store metrics for UI Plotting
+                        comparison_data.append({
+                            'Target CQA': target.replace('_', ' ').upper(),
+                            'Old Model Error (RMSE)': rmse_old,
+                            'New Model Error (RMSE)': rmse_new
+                        })
                     
+                    # Save model to buffer
                     buffer = io.BytesIO()
                     joblib.dump(new_models, buffer)
                     buffer.seek(0)
                     
                     st.session_state['retrained_model'] = buffer.getvalue()
+                    st.session_state['comparison_df'] = pd.DataFrame(comparison_data)
                     st.session_state['retrain_success'] = True
                     
             except Exception as e:
@@ -114,7 +136,22 @@ if st.session_state.get('retrain_success', False):
         mime="application/octet-stream"
     )
 
-st.sidebar.markdown("---")
+# --- Active Learning Validation Plot (Triggers ONLY after Retraining) ---
+if 'comparison_df' in st.session_state:
+    st.success("✅ Active Learning Feedback Loop Completed!")
+    with st.expander("📊 AI Validation: Error Reduction Analysis", expanded=True):
+        st.write("Comparison of AI prediction error before and after training on your wet-lab CSV data. Lower RMSE means higher accuracy.")
+        
+        comp_df = st.session_state['comparison_df']
+        # Melt DataFrame for Plotly Grouped Bar Chart
+        comp_melted = comp_df.melt(id_vars='Target CQA', var_name='Model Version', value_name='Prediction Error (RMSE)')
+        
+        fig_comp = px.bar(comp_melted, x='Target CQA', y='Prediction Error (RMSE)', color='Model Version', barmode='group',
+                          color_discrete_sequence=['#ef553b', '#00cc96'])
+        fig_comp.update_layout(margin=dict(l=20, r=20, t=30, b=20), legend=dict(title=None, orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+        st.plotly_chart(fig_comp, width='stretch')
+
+st.markdown("---")
 
 # --- 3. Interactive Inputs & Normalization ---
 st.sidebar.header("Formulation Inputs (Raw wt%)")
@@ -217,7 +254,6 @@ if st.button("Generate Next 5 Optimal Formulations"):
             import torch
             from sklearn.cluster import KMeans
             
-            # Increased pool size to survive strict filtering
             n_samples = 50000 
             cand_ht = torch.empty(n_samples).uniform_(0.1, 5.0)
             cand_ol = torch.empty(n_samples).uniform_(0.1, 5.0)
@@ -240,7 +276,6 @@ if st.button("Generate Next 5 Optimal Formulations"):
             total_surf_col = t80_col + s80_col
             hlb_col = ((t80_col * 15.0) + (s80_col * 4.3)) / total_surf_col
             
-            # STRICT BOUNDARY FILTER: Applies slider constraints directly to the normalized data
             valid_mask = (
                 (total_surf_col <= 10.0) & 
                 (hlb_col >= 8.0) & 
