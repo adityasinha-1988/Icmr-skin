@@ -78,6 +78,7 @@ if uploaded_file is not None:
                 from sklearn.pipeline import Pipeline
                 from sklearn.preprocessing import StandardScaler
                 from xgboost import XGBRegressor
+                from sklearn.model_selection import cross_val_predict # IMPORTED FOR REALISTIC ERROR
                 
                 uploaded_file.seek(0) 
                 lab_df = pd.read_csv(uploaded_file)
@@ -89,24 +90,30 @@ if uploaded_file is not None:
                     new_models = {}
                     comparison_data = []
 
+                    # Use 3-fold CV if there's enough data, else just use a simple metric
+                    cv_folds = min(3, len(lab_df)) if len(lab_df) > 2 else 2
+
                     for target in targets:
                         y_lab = lab_df[target]
                         
-                        # 1. Calculate Old Model Error
+                        # 1. Calculate Old Model Error (Synthetic Model predicting on Lab Data)
                         preds_old = models[target].predict(X_lab)
                         rmse_old = np.sqrt(mean_squared_error(y_lab, preds_old))
                         
-                        # 2. Train New Model
+                        # Define the pipeline
                         pipe = Pipeline([
                             ('scaler', StandardScaler()),
                             ('regressor', XGBRegressor(random_state=42, n_estimators=200, max_depth=4, learning_rate=0.05, n_jobs=1))
                         ])
+
+                        # 2. Calculate Realistic New Model Error (Cross-Validation)
+                        # This prevents the green bar from being 0 by testing on unseen data folds
+                        preds_cv = cross_val_predict(pipe, X_lab, y_lab, cv=cv_folds)
+                        rmse_new = np.sqrt(mean_squared_error(y_lab, preds_cv))
+                        
+                        # 3. Train Final Model on ALL data for actual deployment
                         pipe.fit(X_lab, y_lab)
                         new_models[target] = pipe
-                        
-                        # 3. Calculate New Model Error
-                        preds_new = pipe.predict(X_lab)
-                        rmse_new = np.sqrt(mean_squared_error(y_lab, preds_new))
                         
                         # Store metrics for UI Plotting
                         comparison_data.append({
@@ -362,3 +369,4 @@ if 'generated_df' in st.session_state:
         st.write("")
         st.write("")
         st.button("Apply to Sliders", on_click=apply_formulation)
+
