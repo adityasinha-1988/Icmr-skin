@@ -195,7 +195,7 @@ st.subheader("Phase 3: Ensemble Optimization & Consensus Node")
 st.write("Running a multi-algorithm ensemble (Bayesian + Global Scavenger) with K-Means clustering to extract the top 5 most diverse, high-efficacy, and chemically valid formulations.")
 
 if st.button("Generate Next 5 Optimal Formulations"):
-    with st.spinner("Initializing Ensemble Nodes (Bayesian GP + XGBoost Surrogate + K-Means)..."):
+    with st.spinner("Initializing Ensemble Nodes (Memory-Safe Mode)..."):
         try:
             import torch
             from botorch.models import SingleTaskGP
@@ -205,7 +205,8 @@ if st.button("Generate Next 5 Optimal Formulations"):
             from sklearn.cluster import KMeans
             
             # 1. Load Data
-            hist_df = pd.read_csv('synthetic_formulation_data.csv') # Ya tera actual file name
+            # MAKE SURE THE FILENAME BELOW MATCHES YOUR ACTUAL GITHUB FILE
+            hist_df = pd.read_csv('synthetic_formulation_data.csv') 
             X_train = torch.tensor(hist_df[features].values, dtype=torch.double)
             spf = torch.tensor(hist_df['spf'].values, dtype=torch.double)
             size = torch.tensor(hist_df['droplet_size_nm'].values, dtype=torch.double)
@@ -220,8 +221,8 @@ if st.button("Generate Next 5 Optimal Formulations"):
             mll = ExactMarginalLogLikelihood(gp.likelihood, gp)
             fit_gpytorch_mll(mll)
 
-            # 3. Generate Massive Candidate Pool (100,000 combinations)
-            n_samples = 100000
+            # 3. Generate Candidate Pool (Memory Safe Limit: 10,000)
+            n_samples = 10000
             cand_ht = torch.empty(n_samples).uniform_(0.1, 5.0)
             cand_ol = torch.empty(n_samples).uniform_(0.1, 5.0)
             cand_ipm = torch.empty(n_samples).uniform_(10.0, 30.0)
@@ -243,13 +244,15 @@ if st.button("Generate Next 5 Optimal Formulations"):
             valid_cands = norm_cands[valid_mask]
             
             if len(valid_cands) < 5:
-                st.error("Constraints are too tight. Not enough physically valid combinations found.")
+                st.error("Constraints are too tight. Not enough physically valid combinations found. Try generating again.")
             else:
-                # 5. Node 1: Evaluate Expected Improvement (Bayesian Uncertainty)
+                # 5. Node 1: Evaluate Expected Improvement (Bayesian Uncertainty) - Batched to save RAM
                 best_f = Y_norm.max()
                 gp.eval()
                 with torch.no_grad():
-                    posterior = gp(valid_cands.double())
+                    # Evaluate GP only on a maximum of 3000 valid candidates to prevent OOM
+                    eval_cands = valid_cands[:3000] 
+                    posterior = gp(eval_cands.double())
                     mean = posterior.mean
                     sigma = posterior.variance.clamp_min(1e-9).sqrt()
                     u = (mean - best_f) / sigma
@@ -258,12 +261,12 @@ if st.button("Generate Next 5 Optimal Formulations"):
                     updf = normal.log_prob(u).exp()
                     ei_scores = sigma * (u * ucdf + updf)
                 
-                # 6. Node 2: Evaluate Direct Surrogate Efficacy (Global Exploitation)
-                valid_cands_np = valid_cands.numpy()
-                valid_df = pd.DataFrame(valid_cands_np, columns=features)
+                # 6. Node 2: Evaluate Direct Surrogate Efficacy
+                eval_cands_np = eval_cands.numpy()
+                eval_df = pd.DataFrame(eval_cands_np, columns=features)
                 
-                preds_spf = models['spf'].predict(valid_df)
-                preds_size = models['droplet_size_nm'].predict(valid_df)
+                preds_spf = models['spf'].predict(eval_df)
+                preds_size = models['droplet_size_nm'].predict(eval_df)
                 
                 size_penalty = np.abs(preds_size - 150.0) * 0.5
                 efficacy_scores = np.maximum(0, (preds_spf * 2) - size_penalty)
@@ -273,30 +276,28 @@ if st.button("Generate Next 5 Optimal Formulations"):
                 eff_norm = (efficacy_scores - np.min(efficacy_scores)) / (np.ptp(efficacy_scores) + 1e-8)
                 consensus_scores = (ei_norm * 0.5) + (eff_norm * 0.5)
                 
-                # Select top 200 candidates based on Consensus Score
-                top_200_idx = np.argsort(consensus_scores)[-200:]
-                top_200_cands = valid_cands_np[top_200_idx]
-                top_200_scores = consensus_scores[top_200_idx]
+                # Select top 50 candidates based on Consensus Score
+                top_50_idx = np.argsort(consensus_scores)[-50:]
+                top_50_cands = eval_cands_np[top_50_idx]
+                top_50_scores = consensus_scores[top_50_idx]
                 
                 # 7. Consensus Node (Diversity Clustering via K-Means)
-                # Ensure we don't give the lab 5 identical formulations
                 kmeans = KMeans(n_clusters=5, random_state=42, n_init=10)
-                cluster_labels = kmeans.fit_predict(top_200_cands)
+                cluster_labels = kmeans.fit_predict(top_50_cands)
                 
                 final_5_idx = []
                 for cluster_id in range(5):
-                    # Find candidates in this cluster
                     cluster_indices = np.where(cluster_labels == cluster_id)[0]
-                    # Find the one with the maximum consensus score in this cluster
-                    best_in_cluster = cluster_indices[np.argmax(top_200_scores[cluster_indices])]
+                    best_in_cluster = cluster_indices[np.argmax(top_50_scores[cluster_indices])]
                     final_5_idx.append(best_in_cluster)
                 
-                best_formulations = top_200_cands[final_5_idx]
+                best_formulations = top_50_cands[final_5_idx]
                 next_batch_df = pd.DataFrame(best_formulations, columns=features)
                 
-                st.success("Ensemble Optimization Complete! K-Means consensus applied. Here are 5 strictly diverse, high-confidence O/W formulations:")
+                st.success("Ensemble Optimization Complete! Here are 5 strictly diverse, high-confidence O/W formulations:")
                 st.dataframe(next_batch_df.style.format("{:.2f}"))
                 
         except Exception as e:
             st.error(f"Ensemble Optimization failed: {e}")
+
 
