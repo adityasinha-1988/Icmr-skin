@@ -12,7 +12,6 @@ warnings.filterwarnings("ignore")
 # --- 1. System Setup & Strict Session State ---
 st.set_page_config(page_title="Nano-Sunscreen Optimizer", layout="wide")
 
-# Initialize default values in session state BEFORE sliders are rendered
 if 'ht_val' not in st.session_state: st.session_state.ht_val = 1.0
 if 'ol_val' not in st.session_state: st.session_state.ol_val = 2.0
 if 'ipm_val' not in st.session_state: st.session_state.ipm_val = 20.0
@@ -20,13 +19,11 @@ if 't80_val' not in st.session_state: st.session_state.t80_val = 5.0
 if 's80_val' not in st.session_state: st.session_state.s80_val = 2.5
 if 'aq_val' not in st.session_state: st.session_state.aq_val = 69.5
 
-# PROPER CALLBACK FUNCTION: Runs before the page re-renders
 def apply_formulation():
     if 'generated_df' in st.session_state and 'selected_formulation_idx' in st.session_state:
         idx = st.session_state.selected_formulation_idx
         row = st.session_state['generated_df'].iloc[idx]
         
-        # Safely update session state keys
         st.session_state.ht_val = float(np.clip(row['hydroxytyrosol_wt_pct'], 0.1, 5.0))
         st.session_state.ol_val = float(np.clip(row['oleuropein_wt_pct'], 0.1, 5.0))
         st.session_state.ipm_val = float(np.clip(row['isopropyl_myristate_wt_pct'], 10.0, 30.0))
@@ -56,7 +53,7 @@ features = [
 ]
 targets = ['spf', 'droplet_size_nm', 'viscosity_cp']
 
-# --- 2. Bio-Team Data Integration (Sidebar) ---
+# --- 2. Bio-Team Data Integration ---
 st.sidebar.header("🧪 Lab Data Integration")
 
 metadata_cols = ['experiment_id', 'date', 'time']
@@ -121,7 +118,6 @@ st.sidebar.markdown("---")
 
 # --- 3. Interactive Inputs & Normalization ---
 st.sidebar.header("Formulation Inputs (Raw wt%)")
-# Binding sliders purely by session state 'key' mapping
 ht = st.sidebar.slider("Hydroxytyrosol", 0.1, 5.0, step=0.1, key='ht_val')
 ol = st.sidebar.slider("Oleuropein", 0.1, 5.0, step=0.1, key='ol_val')
 ipm = st.sidebar.slider("Isopropyl Myristate (Oil)", 10.0, 30.0, step=0.5, key='ipm_val')
@@ -221,7 +217,8 @@ if st.button("Generate Next 5 Optimal Formulations"):
             import torch
             from sklearn.cluster import KMeans
             
-            n_samples = 10000
+            # Increased pool size to survive strict filtering
+            n_samples = 50000 
             cand_ht = torch.empty(n_samples).uniform_(0.1, 5.0)
             cand_ol = torch.empty(n_samples).uniform_(0.1, 5.0)
             cand_ipm = torch.empty(n_samples).uniform_(10.0, 30.0)
@@ -233,15 +230,32 @@ if st.button("Generate Next 5 Optimal Formulations"):
             row_sums = raw_cands.sum(dim=1, keepdim=True)
             norm_cands = (raw_cands / row_sums) * 100.0
 
-            t80_col, s80_col = norm_cands[:, 3], norm_cands[:, 4]
+            ht_col = norm_cands[:, 0]
+            ol_col = norm_cands[:, 1]
+            ipm_col = norm_cands[:, 2]
+            t80_col = norm_cands[:, 3]
+            s80_col = norm_cands[:, 4]
+            aq_col = norm_cands[:, 5]
+
             total_surf_col = t80_col + s80_col
             hlb_col = ((t80_col * 15.0) + (s80_col * 4.3)) / total_surf_col
             
-            valid_mask = (total_surf_col <= 10.0) & (hlb_col >= 8.0) & (hlb_col <= 18.0)
+            # STRICT BOUNDARY FILTER: Applies slider constraints directly to the normalized data
+            valid_mask = (
+                (total_surf_col <= 10.0) & 
+                (hlb_col >= 8.0) & 
+                (hlb_col <= 18.0) &
+                (ht_col >= 0.1) & (ht_col <= 5.0) &
+                (ol_col >= 0.1) & (ol_col <= 5.0) &
+                (ipm_col >= 10.0) & (ipm_col <= 30.0) &
+                (t80_col >= 2.0) & (t80_col <= 10.0) &
+                (s80_col >= 1.0) & (s80_col <= 5.0) &
+                (aq_col >= 40.0) & (aq_col <= 90.0)
+            )
             valid_cands = norm_cands[valid_mask]
             
             if len(valid_cands) < 5:
-                st.error("Constraints are too tight. Try generating again.")
+                st.error(f"Constraints are too tight. Only {len(valid_cands)} valid combinations found. Try generating again.")
             else:
                 eval_cands_np = valid_cands.numpy()
                 eval_df = pd.DataFrame(eval_cands_np, columns=features)
@@ -299,14 +313,12 @@ if st.button("Generate Next 5 Optimal Formulations"):
         except Exception as e:
             st.error(f"Optimization failed: {e}")
 
-# --- Load generated formulation into sliders (FIXED WITH CALLBACK) ---
 if 'generated_df' in st.session_state:
     st.dataframe(st.session_state['generated_df'].style.format("{:.2f}"))
     
     st.markdown("### Load to Dashboard")
     colA, colB = st.columns([3, 1])
     with colA:
-        # Saving the selected index to session state via the 'key' argument
         st.selectbox("Select a formulation from the table above to analyze its properties:", 
                      options=[0, 1, 2, 3, 4], 
                      format_func=lambda x: f"Option {x}",
@@ -314,5 +326,4 @@ if 'generated_df' in st.session_state:
     with colB:
         st.write("")
         st.write("")
-        # Button strictly uses the callback to manipulate state safely
         st.button("Apply to Sliders", on_click=apply_formulation)
