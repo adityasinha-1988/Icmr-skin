@@ -190,59 +190,112 @@ with viz_col3:
 
 st.markdown("---")
 
-# --- 6. Bayesian Optimization Loop ---
-st.subheader("Phase 3: Automated Active Learning")
-st.write("Clicking below initializes the Bayesian models to suggest the next 5 optimal formulations.")
+# --- 6. Consensus-Driven Multi-Objective Active Learning ---
+st.subheader("Phase 3: Ensemble Optimization & Consensus Node")
+st.write("Running a multi-algorithm ensemble (Bayesian + Global Scavenger) with K-Means clustering to extract the top 5 most diverse, high-efficacy, and chemically valid formulations.")
 
 if st.button("Generate Next 5 Optimal Formulations"):
-    with st.spinner("Initializing ML Libraries & Running Bayesian Optimization..."):
+    with st.spinner("Initializing Ensemble Nodes (Bayesian GP + XGBoost Surrogate + K-Means)..."):
         try:
-            # LAZY IMPORT
             import torch
             from botorch.models import SingleTaskGP
             from gpytorch.mlls import ExactMarginalLogLikelihood
             from botorch.fit import fit_gpytorch_mll
-            from botorch.acquisition import qExpectedImprovement
-            from botorch.optim import optimize_acqf
-            from botorch.utils.transforms import normalize, unnormalize
-
-            hist_df = pd.read_csv('synthetic_formulation_data.csv')
-            X = torch.tensor(hist_df[features].values, dtype=torch.double)
+            from torch.distributions import Normal
+            from sklearn.cluster import KMeans
             
+            # 1. Load Data
+            hist_df = pd.read_csv('dummy_lab_data.csv') # Ya tera actual file name
+            X_train = torch.tensor(hist_df[features].values, dtype=torch.double)
             spf = torch.tensor(hist_df['spf'].values, dtype=torch.double)
             size = torch.tensor(hist_df['droplet_size_nm'].values, dtype=torch.double)
-            Y = (spf - (size * 0.1)).unsqueeze(-1)
+            
+            # Target Objective for GP
+            Y_train = (spf - (size * 0.1)).unsqueeze(-1)
+            Y_mean, Y_std = Y_train.mean(), Y_train.std()
+            Y_norm = (Y_train - Y_mean) / (Y_std + 1e-8)
 
-            bounds = torch.tensor([
-                [0.1, 0.1, 10.0, 2.0, 1.0, 40.0],
-                [5.0, 5.0, 30.0, 10.0, 5.0, 90.0]
-            ], dtype=torch.double)
-            
-            X_norm = normalize(X, bounds)
-            
-            gp = SingleTaskGP(X_norm, Y)
+            # 2. Train Bayesian Node (Gaussian Process)
+            gp = SingleTaskGP(X_train, Y_norm)
             mll = ExactMarginalLogLikelihood(gp.likelihood, gp)
             fit_gpytorch_mll(mll)
 
-            acq_func = qExpectedImprovement(model=gp, best_f=Y.max())
+            # 3. Generate Massive Candidate Pool (100,000 combinations)
+            n_samples = 100000
+            cand_ht = torch.empty(n_samples).uniform_(0.1, 5.0)
+            cand_ol = torch.empty(n_samples).uniform_(0.1, 5.0)
+            cand_ipm = torch.empty(n_samples).uniform_(10.0, 30.0)
+            cand_t80 = torch.empty(n_samples).uniform_(2.0, 10.0)
+            cand_s80 = torch.empty(n_samples).uniform_(1.0, 5.0)
+            cand_aq = torch.empty(n_samples).uniform_(40.0, 90.0)
             
-            candidates, _ = optimize_acqf(
-                acq_function=acq_func,
-                bounds=torch.tensor([[0.0] * 6, [1.0] * 6], dtype=torch.double),
-                q=5, num_restarts=5, raw_samples=20,
-            )
-            
-            real_candidates = unnormalize(candidates, bounds)
-            row_sums = real_candidates.sum(dim=1, keepdim=True)
-            normalized_candidates = (real_candidates / row_sums) * 100
-            
-            next_batch_df = pd.DataFrame(normalized_candidates.detach().numpy(), columns=features)
-            
-            st.success("Optimization Complete! Give these compositions to the lab team:")
-            st.dataframe(next_batch_df.style.format("{:.2f}"))
-            
-        except FileNotFoundError:
-            st.error("'synthetic_formulation_data.csv' nahi mili. Please ensure this file is uploaded to your GitHub repository.")
-        except Exception as e:
-            st.error(f"Optimization failed: {e}")
+            raw_cands = torch.stack([cand_ht, cand_ol, cand_ipm, cand_t80, cand_s80, cand_aq], dim=1)
+            row_sums = raw_cands.sum(dim=1, keepdim=True)
+            norm_cands = (raw_cands / row_sums) * 100.0
 
+            # 4. Apply Hard Chemistry Constraints (Physics Filter)
+            t80_col = norm_cands[:, 3]
+            s80_col = norm_cands[:, 4]
+            total_surf_col = t80_col + s80_col
+            hlb_col = ((t80_col * 15.0) + (s80_col * 4.3)) / total_surf_col
+            
+            valid_mask = (total_surf_col <= 10.0) & (hlb_col >= 8.0) & (hlb_col <= 18.0)
+            valid_cands = norm_cands[valid_mask]
+            
+            if len(valid_cands) < 5:
+                st.error("Constraints are too tight. Not enough physically valid combinations found.")
+            else:
+                # 5. Node 1: Evaluate Expected Improvement (Bayesian Uncertainty)
+                best_f = Y_norm.max()
+                gp.eval()
+                with torch.no_grad():
+                    posterior = gp(valid_cands.double())
+                    mean = posterior.mean
+                    sigma = posterior.variance.clamp_min(1e-9).sqrt()
+                    u = (mean - best_f) / sigma
+                    normal = Normal(torch.zeros_like(u), torch.ones_like(u))
+                    ucdf = normal.cdf(u)
+                    updf = normal.log_prob(u).exp()
+                    ei_scores = sigma * (u * ucdf + updf)
+                
+                # 6. Node 2: Evaluate Direct Surrogate Efficacy (Global Exploitation)
+                valid_cands_np = valid_cands.numpy()
+                valid_df = pd.DataFrame(valid_cands_np, columns=features)
+                
+                preds_spf = models['spf'].predict(valid_df)
+                preds_size = models['droplet_size_nm'].predict(valid_df)
+                
+                size_penalty = np.abs(preds_size - 150.0) * 0.5
+                efficacy_scores = np.maximum(0, (preds_spf * 2) - size_penalty)
+                
+                # Normalize both scores to combine them equally (Consensus Logic)
+                ei_norm = (ei_scores.squeeze().numpy() - np.min(ei_scores.numpy())) / (np.ptp(ei_scores.numpy()) + 1e-8)
+                eff_norm = (efficacy_scores - np.min(efficacy_scores)) / (np.ptp(efficacy_scores) + 1e-8)
+                consensus_scores = (ei_norm * 0.5) + (eff_norm * 0.5)
+                
+                # Select top 200 candidates based on Consensus Score
+                top_200_idx = np.argsort(consensus_scores)[-200:]
+                top_200_cands = valid_cands_np[top_200_idx]
+                top_200_scores = consensus_scores[top_200_idx]
+                
+                # 7. Consensus Node (Diversity Clustering via K-Means)
+                # Ensure we don't give the lab 5 identical formulations
+                kmeans = KMeans(n_clusters=5, random_state=42, n_init=10)
+                cluster_labels = kmeans.fit_predict(top_200_cands)
+                
+                final_5_idx = []
+                for cluster_id in range(5):
+                    # Find candidates in this cluster
+                    cluster_indices = np.where(cluster_labels == cluster_id)[0]
+                    # Find the one with the maximum consensus score in this cluster
+                    best_in_cluster = cluster_indices[np.argmax(top_200_scores[cluster_indices])]
+                    final_5_idx.append(best_in_cluster)
+                
+                best_formulations = top_200_cands[final_5_idx]
+                next_batch_df = pd.DataFrame(best_formulations, columns=features)
+                
+                st.success("Ensemble Optimization Complete! K-Means consensus applied. Here are 5 strictly diverse, high-confidence O/W formulations:")
+                st.dataframe(next_batch_df.style.format("{:.2f}"))
+                
+        except Exception as e:
+            st.error(f"Ensemble Optimization failed: {e}")
