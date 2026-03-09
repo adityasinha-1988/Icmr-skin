@@ -9,16 +9,25 @@ import io
 
 warnings.filterwarnings("ignore")
 
-# --- 1. System Setup & Session State Initialization ---
+# --- 1. System Setup & Strict Session State ---
 st.set_page_config(page_title="Nano-Sunscreen Optimizer", layout="wide")
 
-# Initialize session state for sliders so they can be updated programmatically
+# Initialize default values if they don't exist
 if 'ht_val' not in st.session_state: st.session_state.ht_val = 1.0
 if 'ol_val' not in st.session_state: st.session_state.ol_val = 2.0
 if 'ipm_val' not in st.session_state: st.session_state.ipm_val = 20.0
 if 't80_val' not in st.session_state: st.session_state.t80_val = 5.0
 if 's80_val' not in st.session_state: st.session_state.s80_val = 2.5
 if 'aq_val' not in st.session_state: st.session_state.aq_val = 69.5
+
+# Callback function to update sliders cleanly
+def update_sliders_from_table(selected_row):
+    st.session_state.ht_val = float(np.clip(selected_row['hydroxytyrosol_wt_pct'], 0.1, 5.0))
+    st.session_state.ol_val = float(np.clip(selected_row['oleuropein_wt_pct'], 0.1, 5.0))
+    st.session_state.ipm_val = float(np.clip(selected_row['isopropyl_myristate_wt_pct'], 10.0, 30.0))
+    st.session_state.t80_val = float(np.clip(selected_row['tween80_wt_pct'], 2.0, 10.0))
+    st.session_state.s80_val = float(np.clip(selected_row['span80_wt_pct'], 1.0, 5.0))
+    st.session_state.aq_val = float(np.clip(selected_row['aqueous_phase_wt_pct'], 40.0, 90.0))
 
 @st.cache_resource
 def load_surrogate_models():
@@ -35,7 +44,6 @@ if not models:
     st.error("Error: 'macroscopic_surrogate_models.pkl' nahi mili. Please ensure the model file is in your GitHub repository.")
     st.stop()
 
-# Base Features and Targets
 features = [
     'hydroxytyrosol_wt_pct', 'oleuropein_wt_pct', 
     'isopropyl_myristate_wt_pct', 'tween80_wt_pct', 
@@ -43,7 +51,7 @@ features = [
 ]
 targets = ['spf', 'droplet_size_nm', 'viscosity_cp']
 
-# --- 2. Bio-Team Data Integration (Sidebar Top) ---
+# --- 2. Bio-Team Data Integration (Sidebar) ---
 st.sidebar.header("🧪 Lab Data Integration")
 
 metadata_cols = ['experiment_id', 'date', 'time']
@@ -56,8 +64,13 @@ st.sidebar.download_button(
     mime="text/csv"
 )
 
-uploaded_file = st.sidebar.file_uploader("Upload Wet-Lab Results (.csv)", type=["csv"])
+# FIXED: File uploader state management
+uploaded_file = st.sidebar.file_uploader("Upload Wet-Lab Results (.csv)", type=["csv"], key="lab_data_upload")
+
 if uploaded_file is not None:
+    # Adding a small info text to show file is registered
+    st.sidebar.success(f"File loaded: {uploaded_file.name}")
+    
     if st.sidebar.button("Retrain AI Models Now"):
         with st.spinner("Retraining XGBoost (Single-Core Mode)..."):
             try:
@@ -65,7 +78,10 @@ if uploaded_file is not None:
                 from sklearn.preprocessing import StandardScaler
                 from xgboost import XGBRegressor
                 
+                # Reset pointer to start of file to ensure pandas can read it
+                uploaded_file.seek(0) 
                 lab_df = pd.read_csv(uploaded_file)
+                
                 if not all(col in lab_df.columns for col in features + targets):
                     st.sidebar.error("CSV columns mismatch.")
                 else:
@@ -75,52 +91,45 @@ if uploaded_file is not None:
                         y_lab = lab_df[target]
                         pipe = Pipeline([
                             ('scaler', StandardScaler()),
-                            # CRITICAL FIX: n_jobs=1 prevents CPU deadlock on Streamlit Cloud
                             ('regressor', XGBRegressor(random_state=42, n_estimators=200, max_depth=4, learning_rate=0.05, n_jobs=1))
                         ])
                         pipe.fit(X_lab, y_lab)
                         new_models[target] = pipe
                     
-                    # Save model to RAM buffer instead of disk to prevent I/O locks
                     buffer = io.BytesIO()
                     joblib.dump(new_models, buffer)
                     buffer.seek(0)
                     
-                    # Store in session state so download button can live outside
                     st.session_state['retrained_model'] = buffer.getvalue()
                     st.session_state['retrain_success'] = True
                     
             except Exception as e:
                 st.sidebar.error(f"Retraining failed: {e}")
 
-    # The download button must be outside the 'if st.button' block
-    if st.session_state.get('retrain_success', False):
-        st.sidebar.success("Models retrained successfully!")
-        st.sidebar.download_button(
-            label="Download Updated Model (.pkl)", 
-            data=st.session_state['retrained_model'], 
-            file_name="macroscopic_surrogate_models_UPDATED.pkl", 
-            mime="application/octet-stream"
-        )
-        st.sidebar.info("Bio-team: Send this .pkl file to the CS team to permanently update the portal.")
+if st.session_state.get('retrain_success', False):
+    st.sidebar.success("Models retrained successfully!")
+    st.sidebar.download_button(
+        label="Download Updated Model (.pkl)", 
+        data=st.session_state['retrained_model'], 
+        file_name="macroscopic_surrogate_models_UPDATED.pkl", 
+        mime="application/octet-stream"
+    )
 
 st.sidebar.markdown("---")
 
 # --- 3. Interactive Inputs & Normalization ---
 st.sidebar.header("Formulation Inputs (Raw wt%)")
-# Connected to session state keys
-ht = st.sidebar.slider("Hydroxytyrosol", 0.1, 5.0, key='ht_val', step=0.1)
-ol = st.sidebar.slider("Oleuropein", 0.1, 5.0, key='ol_val', step=0.1)
-ipm = st.sidebar.slider("Isopropyl Myristate (Oil)", 10.0, 30.0, key='ipm_val', step=0.5)
-t80 = st.sidebar.slider("Tween 80", 2.0, 10.0, key='t80_val', step=0.1)
-s80 = st.sidebar.slider("Span 80", 1.0, 5.0, key='s80_val', step=0.1)
-aq = st.sidebar.slider("Aqueous Phase", 40.0, 90.0, key='aq_val', step=0.5)
+ht = st.sidebar.slider("Hydroxytyrosol", 0.1, 5.0, value=st.session_state.ht_val, step=0.1, key='ht_val')
+ol = st.sidebar.slider("Oleuropein", 0.1, 5.0, value=st.session_state.ol_val, step=0.1, key='ol_val')
+ipm = st.sidebar.slider("Isopropyl Myristate (Oil)", 10.0, 30.0, value=st.session_state.ipm_val, step=0.5, key='ipm_val')
+t80 = st.sidebar.slider("Tween 80", 2.0, 10.0, value=st.session_state.t80_val, step=0.1, key='t80_val')
+s80 = st.sidebar.slider("Span 80", 1.0, 5.0, value=st.session_state.s80_val, step=0.1, key='s80_val')
+aq = st.sidebar.slider("Aqueous Phase", 40.0, 90.0, value=st.session_state.aq_val, step=0.5, key='aq_val')
 
 raw_inputs = np.array([ht, ol, ipm, t80, s80, aq])
 normalized_inputs = (raw_inputs / raw_inputs.sum()) * 100
 input_df = pd.DataFrame([normalized_inputs], columns=features)
 
-# Constraints logic
 current_tween, current_span = normalized_inputs[3], normalized_inputs[4]
 total_surf = current_tween + current_span
 current_hlb = ((current_tween * 15.0) + (current_span * 4.3)) / total_surf if total_surf > 0 else 0
@@ -287,7 +296,7 @@ if st.button("Generate Next 5 Optimal Formulations"):
         except Exception as e:
             st.error(f"Optimization failed: {e}")
 
-# --- Logic to load generated formulation into sliders ---
+# --- Load generated formulation into sliders (FIXED) ---
 if 'generated_df' in st.session_state:
     st.dataframe(st.session_state['generated_df'].style.format("{:.2f}"))
     
@@ -298,12 +307,8 @@ if 'generated_df' in st.session_state:
     with colB:
         st.write("") # Spacing
         st.write("")
+        # Call the standalone function on button click, avoiding direct st.session_state mutations inside the loop
         if st.button("Apply to Sliders"):
             row = st.session_state['generated_df'].iloc[selected_idx]
-            st.session_state.ht_val = float(np.clip(row['hydroxytyrosol_wt_pct'], 0.1, 5.0))
-            st.session_state.ol_val = float(np.clip(row['oleuropein_wt_pct'], 0.1, 5.0))
-            st.session_state.ipm_val = float(np.clip(row['isopropyl_myristate_wt_pct'], 10.0, 30.0))
-            st.session_state.t80_val = float(np.clip(row['tween80_wt_pct'], 2.0, 10.0))
-            st.session_state.s80_val = float(np.clip(row['span80_wt_pct'], 1.0, 5.0))
-            st.session_state.aq_val = float(np.clip(row['aqueous_phase_wt_pct'], 40.0, 90.0))
+            update_sliders_from_table(row)
             st.rerun()
