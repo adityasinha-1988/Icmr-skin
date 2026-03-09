@@ -12,7 +12,7 @@ warnings.filterwarnings("ignore")
 # --- 1. System Setup & Strict Session State ---
 st.set_page_config(page_title="Nano-Sunscreen Optimizer", layout="wide")
 
-# Initialize default values if they don't exist
+# Initialize default values in session state BEFORE sliders are rendered
 if 'ht_val' not in st.session_state: st.session_state.ht_val = 1.0
 if 'ol_val' not in st.session_state: st.session_state.ol_val = 2.0
 if 'ipm_val' not in st.session_state: st.session_state.ipm_val = 20.0
@@ -20,14 +20,19 @@ if 't80_val' not in st.session_state: st.session_state.t80_val = 5.0
 if 's80_val' not in st.session_state: st.session_state.s80_val = 2.5
 if 'aq_val' not in st.session_state: st.session_state.aq_val = 69.5
 
-# Callback function to update sliders cleanly
-def update_sliders_from_table(selected_row):
-    st.session_state.ht_val = float(np.clip(selected_row['hydroxytyrosol_wt_pct'], 0.1, 5.0))
-    st.session_state.ol_val = float(np.clip(selected_row['oleuropein_wt_pct'], 0.1, 5.0))
-    st.session_state.ipm_val = float(np.clip(selected_row['isopropyl_myristate_wt_pct'], 10.0, 30.0))
-    st.session_state.t80_val = float(np.clip(selected_row['tween80_wt_pct'], 2.0, 10.0))
-    st.session_state.s80_val = float(np.clip(selected_row['span80_wt_pct'], 1.0, 5.0))
-    st.session_state.aq_val = float(np.clip(selected_row['aqueous_phase_wt_pct'], 40.0, 90.0))
+# PROPER CALLBACK FUNCTION: Runs before the page re-renders
+def apply_formulation():
+    if 'generated_df' in st.session_state and 'selected_formulation_idx' in st.session_state:
+        idx = st.session_state.selected_formulation_idx
+        row = st.session_state['generated_df'].iloc[idx]
+        
+        # Safely update session state keys
+        st.session_state.ht_val = float(np.clip(row['hydroxytyrosol_wt_pct'], 0.1, 5.0))
+        st.session_state.ol_val = float(np.clip(row['oleuropein_wt_pct'], 0.1, 5.0))
+        st.session_state.ipm_val = float(np.clip(row['isopropyl_myristate_wt_pct'], 10.0, 30.0))
+        st.session_state.t80_val = float(np.clip(row['tween80_wt_pct'], 2.0, 10.0))
+        st.session_state.s80_val = float(np.clip(row['span80_wt_pct'], 1.0, 5.0))
+        st.session_state.aq_val = float(np.clip(row['aqueous_phase_wt_pct'], 40.0, 90.0))
 
 @st.cache_resource
 def load_surrogate_models():
@@ -64,11 +69,9 @@ st.sidebar.download_button(
     mime="text/csv"
 )
 
-# FIXED: File uploader state management
 uploaded_file = st.sidebar.file_uploader("Upload Wet-Lab Results (.csv)", type=["csv"], key="lab_data_upload")
 
 if uploaded_file is not None:
-    # Adding a small info text to show file is registered
     st.sidebar.success(f"File loaded: {uploaded_file.name}")
     
     if st.sidebar.button("Retrain AI Models Now"):
@@ -78,7 +81,6 @@ if uploaded_file is not None:
                 from sklearn.preprocessing import StandardScaler
                 from xgboost import XGBRegressor
                 
-                # Reset pointer to start of file to ensure pandas can read it
                 uploaded_file.seek(0) 
                 lab_df = pd.read_csv(uploaded_file)
                 
@@ -119,12 +121,13 @@ st.sidebar.markdown("---")
 
 # --- 3. Interactive Inputs & Normalization ---
 st.sidebar.header("Formulation Inputs (Raw wt%)")
-ht = st.sidebar.slider("Hydroxytyrosol", 0.1, 5.0, value=st.session_state.ht_val, step=0.1, key='ht_val')
-ol = st.sidebar.slider("Oleuropein", 0.1, 5.0, value=st.session_state.ol_val, step=0.1, key='ol_val')
-ipm = st.sidebar.slider("Isopropyl Myristate (Oil)", 10.0, 30.0, value=st.session_state.ipm_val, step=0.5, key='ipm_val')
-t80 = st.sidebar.slider("Tween 80", 2.0, 10.0, value=st.session_state.t80_val, step=0.1, key='t80_val')
-s80 = st.sidebar.slider("Span 80", 1.0, 5.0, value=st.session_state.s80_val, step=0.1, key='s80_val')
-aq = st.sidebar.slider("Aqueous Phase", 40.0, 90.0, value=st.session_state.aq_val, step=0.5, key='aq_val')
+# Binding sliders purely by session state 'key' mapping
+ht = st.sidebar.slider("Hydroxytyrosol", 0.1, 5.0, step=0.1, key='ht_val')
+ol = st.sidebar.slider("Oleuropein", 0.1, 5.0, step=0.1, key='ol_val')
+ipm = st.sidebar.slider("Isopropyl Myristate (Oil)", 10.0, 30.0, step=0.5, key='ipm_val')
+t80 = st.sidebar.slider("Tween 80", 2.0, 10.0, step=0.1, key='t80_val')
+s80 = st.sidebar.slider("Span 80", 1.0, 5.0, step=0.1, key='s80_val')
+aq = st.sidebar.slider("Aqueous Phase", 40.0, 90.0, step=0.5, key='aq_val')
 
 raw_inputs = np.array([ht, ol, ipm, t80, s80, aq])
 normalized_inputs = (raw_inputs / raw_inputs.sum()) * 100
@@ -296,19 +299,20 @@ if st.button("Generate Next 5 Optimal Formulations"):
         except Exception as e:
             st.error(f"Optimization failed: {e}")
 
-# --- Load generated formulation into sliders (FIXED) ---
+# --- Load generated formulation into sliders (FIXED WITH CALLBACK) ---
 if 'generated_df' in st.session_state:
     st.dataframe(st.session_state['generated_df'].style.format("{:.2f}"))
     
     st.markdown("### Load to Dashboard")
     colA, colB = st.columns([3, 1])
     with colA:
-        selected_idx = st.selectbox("Select a formulation from the table above to analyze its properties:", options=[0, 1, 2, 3, 4], format_func=lambda x: f"Option {x}")
+        # Saving the selected index to session state via the 'key' argument
+        st.selectbox("Select a formulation from the table above to analyze its properties:", 
+                     options=[0, 1, 2, 3, 4], 
+                     format_func=lambda x: f"Option {x}",
+                     key='selected_formulation_idx')
     with colB:
-        st.write("") # Spacing
         st.write("")
-        # Call the standalone function on button click, avoiding direct st.session_state mutations inside the loop
-        if st.button("Apply to Sliders"):
-            row = st.session_state['generated_df'].iloc[selected_idx]
-            update_sliders_from_table(row)
-            st.rerun()
+        st.write("")
+        # Button strictly uses the callback to manipulate state safely
+        st.button("Apply to Sliders", on_click=apply_formulation)
