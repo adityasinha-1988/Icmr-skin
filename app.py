@@ -205,7 +205,7 @@ if st.button("Generate Next 5 Optimal Formulations"):
             from sklearn.cluster import KMeans
             
             # 1. Load Data
-            hist_df = pd.read_csv('dummy_lab_data.csv') # Ya tera actual file name
+            hist_df = pd.read_csv('synthetic_formulation_data.csv') # Ya tera actual file name
             X_train = torch.tensor(hist_df[features].values, dtype=torch.double)
             spf = torch.tensor(hist_df['spf'].values, dtype=torch.double)
             size = torch.tensor(hist_df['droplet_size_nm'].values, dtype=torch.double)
@@ -299,3 +299,4 @@ if st.button("Generate Next 5 Optimal Formulations"):
                 
         except Exception as e:
             st.error(f"Ensemble Optimization failed: {e}")
+
